@@ -1,0 +1,2 @@
+17/07/2020
+https://www.arduino.cc/en/Reference/softwareSerial (10:55)
