@@ -9,8 +9,8 @@
 FirebaseData firebaseData;
 FirebaseJson json;
 
-String pathSet = "/device-1/readnow";
-String pathPuse = "/device-1/reads";
+String pathSet = "/device-1/reading_now";
+String pathPuse = "/device-1/readings";
 
 
 void setup() {
@@ -39,27 +39,36 @@ char *ssid = "NET_2GDF6789";
 char *password = "B3DF6789";
 
 void loop() {
-  FirebaseJson gps;
-  gps.clear().add("0", int(3213.3));
-  gps.add("1", int(3213213.45));
+  //sendInformationToFirebase(-8.0, 34.5, 100.0, 50.0, 50, 45);
+}
+
+bool sendInformationToFirebase(double lat, double lng, double horizontal, double vertical, int lvl, int lumus){
+  FirebaseJson gps, angleOfSolarPanel;
+  gps.clear().add("lat", int(lat));
+  gps.add("lng", int(lng));
+  angleOfSolarPanel.clear().add("horizontal", int(horizontal));
+  angleOfSolarPanel.add("vertical", int(vertical));
   Serial.println("Sending data to Firebase");
   json.clear().add("gps", gps);
-  json.add("inclination",int(1));
-  json.add("rotacion",int(2));
-  json.add("charge",int(3));
-  json.add("lums",-9898);
-  json.add("power",int(13));
+  json.add("angleOfSolarPanel", angleOfSolarPanel);
+  json.add("battery",int(lvl));
+  json.add("luminosity",int(lumus));
 
   if (!Firebase.setJSON(firebaseData, pathSet, json)){
       Serial.println("FAILED");
       Serial.println("REASON: " + firebaseData.errorReason());
       Serial.println("------------------------------------");
       Serial.println();
+      return false;
   }
   if(!Firebase.pushJSON(firebaseData, pathPuse, json)){
       Serial.println("FAILED");
       Serial.println("REASON: " + firebaseData.errorReason());
       Serial.println("------------------------------------");
       Serial.println();
-  }
+      return false;
+  }  
+  return true;
 }
+
+

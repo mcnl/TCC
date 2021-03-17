@@ -5,7 +5,7 @@ const int stepsPerRevolution = 500;
 //Inicializa a biblioteca utilizando as portas de 8 a 11 para 
 //ligacao ao motor 
 Stepper myStepper_vertical(stepsPerRevolution, 26,33,25,32); 
-Stepper myStepper_horizontal(stepsPerRevolution, 23,18,19,5); //13 12 14 27
+Stepper myStepper_horizontal(stepsPerRevolution, 23,18,19,5);
 int angleofSun   = 108;
 int currentAngle = 0;
 void setup() 

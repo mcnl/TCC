@@ -89,14 +89,13 @@ int main(){
 	printf("Sun Position Software - Writen by Matheus Casa Nova da Luz\n");
 	double *ret;
 	double now;
-	for(int i=21; i>-3; i--){
-		for(int j=0; j<60; j++){
-			now = (double)dateToMiliseconds(0,j,i+3,19,2,2021); 
-			ret = getposition(now,-8.15762000,-34.91477200);
-			if(*(ret + 1)!=0){
-				printf("Time: %d:%d\n Elevacao: %f Azimute: %f\n\n", abs(i-24),j, *(ret + 1), *(ret + 0));	
-			}
+	for(int i = 0; i<24;i++){
+		now = (double)dateToMiliseconds(0,0,(24 - i)+3,10,3,2021); 
+		ret = getposition(now,-8.15762000,-34.91477200);
+		if(*(ret + 1)!=0){
+			printf("Time: %d\n Elevacao: %f Azimute: %f\n\n", i, *(ret + 1), *(ret + 0));	
 		}
 	}
+	
 	return 0;
 }
