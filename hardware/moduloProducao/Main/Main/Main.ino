@@ -1,10 +1,15 @@
 //Modulo de Producao - Código Principal
 //Escrito e projetado por Matheus Casa Nova da Luz
+
+#define Nsta 3     // Two state values: pressure, temperature
+#define Mobs 3     // Three measurements: baro pressure, baro temperature, LM35 temperature
+
+
+#include <TinyEKF.h>
+
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
-
-#include <MPU6050_tockn.h>
 #include <Wire.h>
 
 #include <Stepper.h> 
@@ -15,7 +20,59 @@
 #include <virtuabotixRTC.h> 
 
 //Variaveis do Modulo de Produção
-MPU6050 sensordeAngulagem(Wire); //Sensor de Angulagem
+//Sensor de Angulagem
+const int MPU_addr=0x68;
+int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
+ 
+int minVal=265;
+int maxVal=402;
+
+class Fuser : public TinyEKF {
+
+    public:
+
+        Fuser()
+        {            
+            // We approximate the process noise using a small constant
+            this->setQ(0, 0, .0001);
+            this->setQ(1, 1, .0001);
+
+            // Same for measurement noise
+            this->setR(0, 0, .0001);
+            this->setR(1, 1, .0001);
+            this->setR(2, 2, .0001);
+        }
+
+    protected:
+
+        void model(double fx[Nsta], double F[Nsta][Nsta], double hx[Mobs], double H[Mobs][Nsta])
+        {
+            // Process model is f(x) = x
+            fx[0] = this->x[0];
+            fx[1] = this->x[1];
+
+            // So process model Jacobian is identity matrix
+            F[0][0] = 1;
+            F[1][1] = 1;
+
+            // Measurement function simplifies the relationship between state and sensor readings for convenience.
+            // A more realistic measurement function would distinguish between state value and measured value; e.g.:
+            //   hx[0] = pow(this->x[0], 1.03);
+            //   hx[1] = 1.005 * this->x[1];
+            //   hx[2] = .9987 * this->x[1] + .001;
+            hx[0] = this->x[0]; // Barometric pressure from previous state
+            hx[1] = this->x[1]; // Baro temperature from previous state
+            hx[2] = this->x[1]; // LM35 temperature from previous state
+
+            // Jacobian of measurement function
+            H[0][0] = 1;        // Barometric pressure from previous state
+            H[1][1] = 1 ;       // Baro temperature from previous state
+            H[2][1] = 1 ;       // LM35 temperature from previous state
+        }
+};
+
+ Fuser ekf;
+ 
 //Motores de Passo
 const int stepsPerRevolution = 500; 
 Stepper myStepper_vertical(stepsPerRevolution, 26,33,25,32); 
@@ -39,10 +96,12 @@ void setup() {
   // Setup Inicial 
   Serial.begin(9600);
   setupModuloProducao();
+  //dataHoraAtual();
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
+  //if(myRTC.hours - dataAtual[2] == 1 || myRTC.hours - dataAtual[2] == -23)
   char result = mainmoduloProducao();
   delay(5000);
 }
@@ -52,11 +111,13 @@ void setupModuloProducao(){
   
   //Sensor de Angulagem
   Wire.begin();
-  sensordeAngulagem.begin();
-  sensordeAngulagem.calcGyroOffsets(true);
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
   //Motores de Passo
-  myStepper_vertical.setSpeed(60);
-  myStepper_horizontal.setSpeed(60);
+  myStepper_vertical.setSpeed(30);
+  myStepper_horizontal.setSpeed(10);
   //GPS
   ss.begin(GPSBaud);
   //RTC (segundos, minutos, hora, dia da semana, dia do mes, mes, ano)
@@ -132,18 +193,36 @@ void printaTempo(){
 
 }
 bool obterAnguloAtual(){
-  sensordeAngulagem.update();
-  angulosPlacaSolar[0] = sensordeAngulagem.getAngleX();
-  angulosPlacaSolar[1] = sensordeAngulagem.getAngleY();
-  angulosPlacaSolar[2] = sensordeAngulagem.getAngleZ();
+  
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_addr,14,true);
+  
+  AcX=Wire.read()<<8|Wire.read();
+  AcY=Wire.read()<<8|Wire.read();
+  AcZ=Wire.read()<<8|Wire.read();
+
+  double out[3] = {AcX, AcY, AcZ};
+  ekf.step(out);
+    
+  int xAng = map(out[0],minVal,maxVal,0,360);
+  int yAng = map(out[1],minVal,maxVal,0,360);
+  int zAng = map(out[2],minVal,maxVal,0,360);
+  
+  angulosPlacaSolar[0] = RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
+  angulosPlacaSolar[1] = RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
+  angulosPlacaSolar[2] = RAD_TO_DEG * (atan2(-yAng, -xAng)+PI);
+
+  
   return true;
 }
 void printaAngulo(){
   Serial.println("Pegando Angulo Atual");
   Serial.print("Angulo Eixo X: ");
-  Serial.print(sensordeAngulagem.getAngleX());
+  Serial.print(angulosPlacaSolar[0]);
   Serial.print(" Angulo Eixo Y: ");
-  Serial.println(sensordeAngulagem.getAngleY());
+  Serial.println(angulosPlacaSolar[1]);
 }
 bool posicaoGpsAtual(){
   return true;//just for DEBUG - Delete this line after
@@ -177,28 +256,28 @@ void posicionarPlaca(){
   Serial.println("Posicionando a placa...");
   while(!perfectPositioned){
     obterAnguloAtual();
-    //TODO valores a serem calibrados
     printaAngulo();
     Serial.print("\nDiferença de Elevacao: ");
-    Serial.print(angulosPlacaSolar[0] - ultimaElevacao);
+    Serial.println(angulosPlacaSolar[0] - ultimaElevacao);
     Serial.print(" Diferença de Azimuth: ");
     Serial.println(angulosPlacaSolar[1] - ultimoAzimuth);
     
     if((angulosPlacaSolar[0] - ultimaElevacao) > 5){
-      moverMotorElevacao(1024);
+      //moverMotorElevacao(3000);
     }
     else if((angulosPlacaSolar[1] - ultimoAzimuth) > 5){
-      moverMotorAzimuth(1024);
+      //moverMotorAzimuth(1000);
     }
     else if((angulosPlacaSolar[0] - ultimaElevacao) < -5){
-      moverMotorElevacao(-1024);
+      //moverMotorElevacao(-3000);
     }
     else if((angulosPlacaSolar[1] - ultimoAzimuth) < -5){
-      moverMotorAzimuth(-1024);
+     //moverMotorAzimuth(-1000);
     }
     else{
       perfectPositioned = true;      
     }
+    delay(500);
   }
   Serial.println("Placa posicionada adequadamente!");
 }
@@ -293,4 +372,3 @@ void printaposicaoSolarAtual(){
   Serial.println(ultimoAzimuth);
 }
 //posicaoSolarAtualFim -------------------------
-
