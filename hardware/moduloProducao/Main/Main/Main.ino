@@ -84,11 +84,12 @@ TinyGPSPlus gps;
 SoftwareSerial ss(RXPin, TXPin);
 //Data, GPS e Angulo
 //Segundos, Minutos, Horas, Dia, Mes, Ano
-int dataAtual[6]      = {0,0,12,19,3,2021};
+int dataAtual[6]      = {0,0,11,19,3,2021};
 double gpsAtual[]    = {-8.15762000,-34.91477200};
 double ultimaElevacao = 90.0;
 double ultimoAzimuth  = 0.0;
 float angulosPlacaSolar[3] = {0,0,0};
+float filterAngulosPlacaSolar[3] = {0,0,0};
 //RTC
 virtuabotixRTC myRTC(14, 12, 13);
 
@@ -117,7 +118,7 @@ void setupModuloProducao(){
   Wire.endTransmission(true);
   //Motores de Passo
   myStepper_vertical.setSpeed(30);
-  myStepper_horizontal.setSpeed(10);
+  myStepper_horizontal.setSpeed(1);
   //GPS
   ss.begin(GPSBaud);
   //RTC (segundos, minutos, hora, dia da semana, dia do mes, mes, ano)
@@ -193,26 +194,43 @@ void printaTempo(){
 
 }
 bool obterAnguloAtual(){
-  
-  Wire.beginTransmission(MPU_addr);
-  Wire.write(0x3B);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_addr,14,true);
-  
-  AcX=Wire.read()<<8|Wire.read();
-  AcY=Wire.read()<<8|Wire.read();
-  AcZ=Wire.read()<<8|Wire.read();
-
-  double out[3] = {AcX, AcY, AcZ};
-  ekf.step(out);
+  for(int i = 0; i<1000 ; i++){
+    Wire.beginTransmission(MPU_addr);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU_addr,14,true);
     
-  int xAng = map(out[0],minVal,maxVal,0,360);
-  int yAng = map(out[1],minVal,maxVal,0,360);
-  int zAng = map(out[2],minVal,maxVal,0,360);
+    AcX=Wire.read()<<8|Wire.read();
+    AcY=Wire.read()<<8|Wire.read();
+    AcZ=Wire.read()<<8|Wire.read();
   
-  angulosPlacaSolar[0] = RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
-  angulosPlacaSolar[1] = RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
-  angulosPlacaSolar[2] = RAD_TO_DEG * (atan2(-yAng, -xAng)+PI);
+    double out[3] = {AcX, AcY, AcZ};
+    ekf.step(out);
+      
+    int xAng = map(out[0],minVal,maxVal,0,360);
+    int yAng = map(out[1],minVal,maxVal,0,360);
+    int zAng = map(out[2],minVal,maxVal,0,360);
+    
+    angulosPlacaSolar[0] = RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
+    angulosPlacaSolar[1] = RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
+    angulosPlacaSolar[2] = RAD_TO_DEG * (atan2(-yAng, -xAng)+PI);
+    
+    filterAngulosPlacaSolar[0] += angulosPlacaSolar[0];
+    filterAngulosPlacaSolar[1] += angulosPlacaSolar[1];
+    filterAngulosPlacaSolar[2] += angulosPlacaSolar[2];
+
+  }
+  
+  angulosPlacaSolar[0] = (90 * abs(cos(filterAngulosPlacaSolar[0]/1000*PI/180)));
+  angulosPlacaSolar[1] = angulosPlacaSolar[1]/1000;
+  angulosPlacaSolar[2] = angulosPlacaSolar[2]/1000;
+  
+  //Equacao para adequar angulo a o espaco de angulo de elevacao
+  angulosPlacaSolar[1] = ((((angulosPlacaSolar[0]/90)*angulosPlacaSolar[2] + (1-angulosPlacaSolar[0]/90)*angulosPlacaSolar[1]))*2.25);
+
+  filterAngulosPlacaSolar[0] = 0;
+  filterAngulosPlacaSolar[1] = 0;
+  filterAngulosPlacaSolar[2] = 0;
 
   
   return true;
@@ -221,8 +239,12 @@ void printaAngulo(){
   Serial.println("Pegando Angulo Atual");
   Serial.print("Angulo Eixo X: ");
   Serial.print(angulosPlacaSolar[0]);
-  Serial.print(" Angulo Eixo Y: ");
+  Serial.print(" Angulo Eixo de Rotação Horizontal: ");
   Serial.println(angulosPlacaSolar[1]);
+  Serial.print("Elevacao alvo: ");
+  Serial.print(ultimaElevacao);
+  Serial.print(" Azimute: ");
+  Serial.println(ultimoAzimuth);
 }
 bool posicaoGpsAtual(){
   return true;//just for DEBUG - Delete this line after
@@ -255,24 +277,22 @@ void posicionarPlaca(){
   bool perfectPositioned = false;
   Serial.println("Posicionando a placa...");
   while(!perfectPositioned){
-    obterAnguloAtual();
     printaAngulo();
-    Serial.print("\nDiferença de Elevacao: ");
-    Serial.println(angulosPlacaSolar[0] - ultimaElevacao);
-    Serial.print(" Diferença de Azimuth: ");
-    Serial.println(angulosPlacaSolar[1] - ultimoAzimuth);
+    obterAnguloAtual();
+    double diferencaElevacao = angulosPlacaSolar[0] - ultimaElevacao;
+    double diferencaAzimute  = angulosPlacaSolar[1] - ultimoAzimuth;
     
-    if((angulosPlacaSolar[0] - ultimaElevacao) > 5){
-      //moverMotorElevacao(3000);
+    if(diferencaElevacao > 5){
+      moverMotorElevacao(-3000);
     }
-    else if((angulosPlacaSolar[1] - ultimoAzimuth) > 5){
-      //moverMotorAzimuth(1000);
+    else if(diferencaAzimute > 5){
+      moverMotorAzimuth(-10000);
     }
-    else if((angulosPlacaSolar[0] - ultimaElevacao) < -5){
-      //moverMotorElevacao(-3000);
+    else if(diferencaElevacao < -5){
+      moverMotorElevacao(+3000);
     }
-    else if((angulosPlacaSolar[1] - ultimoAzimuth) < -5){
-     //moverMotorAzimuth(-1000);
+    else if(diferencaAzimute < -5){
+     moverMotorAzimuth(+10000);
     }
     else{
       perfectPositioned = true;      
@@ -365,10 +385,12 @@ void posicaoSolarAtual(){
   printaposicaoSolarAtual();//DEBUG REMOVE AFTER
 }
 void printaposicaoSolarAtual(){
+  Serial.println("==========================");
   Serial.println("Pegando posição do sol: ");
   Serial.print("Elevacao: ");
   Serial.print(ultimaElevacao);
   Serial.print(" Azimute: ");
   Serial.println(ultimoAzimuth);
+  Serial.println("==========================");
 }
 //posicaoSolarAtualFim -------------------------

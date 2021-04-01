@@ -20,7 +20,7 @@ void setup()
 void loop() 
 { 
 contator +=1;
-myStepper_horizontal.step(2048);
+myStepper_vertical.step(+3000);
 Serial.println(contator);
 Serial.println("Continuar?");
 Serial.read();

@@ -58,10 +58,13 @@ int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
 int minVal=265;
 int maxVal=402;
  
+
 double x;
 double y;
 double z;
  
+double filterX=0, filterY=0, filterZ=0;
+
 void setup(){
 Wire.begin();
 Wire.beginTransmission(MPU_addr);
@@ -71,35 +74,52 @@ Wire.endTransmission(true);
 Serial.begin(9600);
 }
 void loop(){
+for(int i = 0; i<1000;i++){
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_addr,14,true);
   
-Wire.beginTransmission(MPU_addr);
-Wire.write(0x3B);
-Wire.endTransmission(false);
-Wire.requestFrom(MPU_addr,14,true);
+  AcX=Wire.read()<<8|Wire.read();
+  AcY=Wire.read()<<8|Wire.read();
+  AcZ=Wire.read()<<8|Wire.read();
+  
+  double out[3] = {AcX, AcY, AcZ};
+  ekf.step(out);
+  
+  int xAng = map(out[0],minVal,maxVal,0,360);
+  int yAng = map(out[1],minVal,maxVal,0,360);
+  int zAng = map(out[2],minVal,maxVal,0,360);
+   
+  x= RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
+  y= RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
+  z= RAD_TO_DEG * (atan2(-yAng, -xAng)+PI);
 
-AcX=Wire.read()<<8|Wire.read();
-AcY=Wire.read()<<8|Wire.read();
-AcZ=Wire.read()<<8|Wire.read();
-
-double out[3] = {AcX, AcY, AcZ};
-ekf.step(out);
-
-int xAng = map(out[0],minVal,maxVal,0,360);
-int yAng = map(out[1],minVal,maxVal,0,360);
-int zAng = map(out[2],minVal,maxVal,0,360);
- 
-x= RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
-y= RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
-z= RAD_TO_DEG * (atan2(-yAng, -xAng)+PI);
-
-
+  
+  filterX += x;
+  filterY += y;
+  filterZ += z;
+}
+double angle1 = 90 * cos(filterX/1000*PI/180);
+x = filterX/1000;
+y = filterY/1000;
+z = filterZ/1000;
 Serial.print(x);
+Serial.print("\t");
+
+Serial.print(angle1);
 Serial.print("\t");
 
 Serial.print(y);
 Serial.print("\t"); 
 
-Serial.println(z);
+Serial.print(z);
+Serial.print("\t"); 
 
+Serial.println((((angle1/90)*z + (1-angle1/90)*y))*2.25);
+
+  filterX = 0;
+  filterY = 0;
+  filterZ = 0;
 delay(400);
 }
