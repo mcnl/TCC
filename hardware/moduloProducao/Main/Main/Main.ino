@@ -1,9 +1,11 @@
 //Modulo de Producao - Código Principal
 //Escrito e projetado por Matheus Casa Nova da Luz
 
-#define Nsta 3     // Two state values: pressure, temperature
-#define Mobs 3     // Three measurements: baro pressure, baro temperature, LM35 temperature
+#define Nsta 3     // 3 valores de estado:
+#define Mobs 3     // Three 
 
+#define uS_TO_S_FACTOR 1000000ULL  
+#define TIME_TO_SLEEP  120   
 
 #include <TinyEKF.h>
 
@@ -93,20 +95,107 @@ float filterAngulosPlacaSolar[3] = {0,0,0};
 //RTC
 virtuabotixRTC myRTC(14, 12, 13);
 
+
+//Parte do modulo de Gerenciamento de Bateria
+//Variaveis do Sleep
+RTC_DATA_ATTR int bootCount = 0;
+
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
+//Variaveis de medição da Bateria
+const int pinoTensao = 27;
+int entradaAnalogicaTensao = 0;
+double tensao;
+int nivelCarga; 
+
+
 void setup() {
   // Setup Inicial 
   Serial.begin(9600);
+  setupGerenciamentoBateria();
   setupModuloProducao();
   //dataHoraAtual();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  //if(myRTC.hours - dataAtual[2] == 1 || myRTC.hours - dataAtual[2] == -23)
-  char result = mainmoduloProducao();
+  
+  char resultadoGerenciamentodeBateria = mainGerenciamentodeBateria();
+  if     (resultadoGerenciamentodeBateria == '0') Serial.println("Nivel Calculado com Sucesso");
+  else if(resultadoGerenciamentodeBateria == '1') Serial.println("Erro de Leitura de Tensao");
+  
+  if((myRTC.hours - dataAtual[2] == 1 || myRTC.hours - dataAtual[2] == 23) && false/*remove this after done*/){
+    char result = mainmoduloProducao(); 
+    if     (result == '1')Serial.println("Erro na angulacao/mecanico");
+    else if(result == '2')Serial.println("Erro no GPS");
+    else if(result == '3')Serial.println("Erro no RTC");
+    else if(result == '4')Serial.println("Erro ao posicionar placa");
+    else Serial.println("Nenhum erro, placa rotacionado com sucesso");
+  } 
+  
   delay(5000);
 }
 
+//Funcoes divididas
+void modoEconomia(bool ligar){
+  if(ligar){
+    Serial.println("Nivel de carga baixo, entrando em modo de economia");
+    Serial.flush(); 
+    esp_deep_sleep_start();
+  }
+}
+
+
+//INICIO Gerenciamento de Bateria
+
+void setupGerenciamentoBateria(){
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+  print_wakeup_reason();
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
+  " Seconds");
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_2,1); 
+}
+
+char mainGerenciamentodeBateria(){
+  entradaAnalogicaTensao = analogRead(pinoTensao);
+  if(entradaAnalogicaTensao<0 || entradaAnalogicaTensao>4096)return '2';
+  calculaNiveldeCarga(analogRead(pinoTensao));
+  if(nivelCarga<20){
+    modoEconomia(true);
+    return '1';
+  }    
+  return '0';
+}
+float calculaNiveldeCarga(int leituraAnalogica){
+  tensao = 0.000806 * (float)leituraAnalogica + 1.6;
+   
+  if(tensao<3){
+     nivelCarga = 0;
+  }
+  else{
+    nivelCarga = (tensao-3.0)*83.333;
+  }
+  
+}
+
+//FIM Gerenciamento de Bateria
+
+
+// Inicio MODULO DE PRODUCAO
 
 void setupModuloProducao(){
   
@@ -140,22 +229,24 @@ char mainmoduloProducao(){
   else{
     posicaoSolarAtual();
     printaAngulo();
-    posicionarPlaca();
+    bool error = posicionarPlaca();
+    if(!error) return '4';
     return '0';
   }
 }
 
 
 bool dataHoraAtual(){
-
-  myRTC.updateTime(); 
-  printaTempo();//DEBUG - Remove after complete
+  myRTC.updateTime();
+  if(dataAtual[2] - myRTC.hours != 1 || dataAtual[2] - myRTC.hours != 23) return true;
   dataAtual[0] = myRTC.seconds;
   dataAtual[1] = myRTC.minutes;
   dataAtual[2] = myRTC.hours;
   dataAtual[3] = myRTC.dayofmonth;
   dataAtual[4] = myRTC.month;
   dataAtual[5] = myRTC.year;
+
+  if(dataAtual[5]!=2021) return false;
   
   return true;
 }
@@ -222,8 +313,8 @@ bool obterAnguloAtual(){
   }
   
   angulosPlacaSolar[0] = (90 * abs(cos(filterAngulosPlacaSolar[0]/1000*PI/180)));
-  angulosPlacaSolar[1] = angulosPlacaSolar[1]/1000;
-  angulosPlacaSolar[2] = angulosPlacaSolar[2]/1000;
+  angulosPlacaSolar[1] = filterAngulosPlacaSolar[1]/1000;
+  angulosPlacaSolar[2] = filterAngulosPlacaSolar[2]/1000;
   
   //Equacao para adequar angulo a o espaco de angulo de elevacao
   angulosPlacaSolar[1] = ((((angulosPlacaSolar[0]/90)*angulosPlacaSolar[2] + (1-angulosPlacaSolar[0]/90)*angulosPlacaSolar[1]))*2.25);
@@ -232,7 +323,7 @@ bool obterAnguloAtual(){
   filterAngulosPlacaSolar[1] = 0;
   filterAngulosPlacaSolar[2] = 0;
 
-  
+  if(angulosPlacaSolar[2]==225) return false;
   return true;
 }
 void printaAngulo(){
@@ -273,12 +364,15 @@ void moverMotorAzimuth(int passos){
 void moverMotorElevacao(int passos){
   myStepper_vertical.step(passos);
 }
-void posicionarPlaca(){
+bool posicionarPlaca(){
   bool perfectPositioned = false;
   Serial.println("Posicionando a placa...");
   while(!perfectPositioned){
     printaAngulo();
-    obterAnguloAtual();
+    bool error = obterAnguloAtual();
+    
+    if(!error) return false;
+    
     double diferencaElevacao = angulosPlacaSolar[0] - ultimaElevacao;
     double diferencaAzimute  = angulosPlacaSolar[1] - ultimoAzimuth;
     
@@ -299,7 +393,7 @@ void posicionarPlaca(){
     }
     delay(500);
   }
-  Serial.println("Placa posicionada adequadamente!");
+  return true;
 }
 
 //posicaoSolarAtual ----------------------------
@@ -394,3 +488,5 @@ void printaposicaoSolarAtual(){
   Serial.println("==========================");
 }
 //posicaoSolarAtualFim -------------------------
+
+//FIM MODULO DE PRODUCAO
