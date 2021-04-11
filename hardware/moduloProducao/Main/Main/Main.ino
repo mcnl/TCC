@@ -92,10 +92,13 @@ double ultimaElevacao = 90.0;
 double ultimoAzimuth  = 0.0;
 float angulosPlacaSolar[3] = {0,0,0};
 float filterAngulosPlacaSolar[3] = {0,0,0};
+int ultimaMovimentacao = 10;
 //RTC
 virtuabotixRTC myRTC(14, 12, 13);
-
-
+//Comando
+SoftwareSerial sistemaMestre(15,4);
+//LDR
+int brilho;
 //Parte do modulo de Gerenciamento de Bateria
 //Variaveis do Sleep
 RTC_DATA_ATTR int bootCount = 0;
@@ -127,16 +130,24 @@ void setup() {
   Serial.begin(9600);
   setupGerenciamentoBateria();
   setupModuloProducao();
-  //dataHoraAtual();
+  setupComando();
+  dataHoraAtual();
 }
 
 void loop() {
+
+  mainprocessamentodeComando();
+  calcularBrilho();
   
   char resultadoGerenciamentodeBateria = mainGerenciamentodeBateria();
-  if     (resultadoGerenciamentodeBateria == '0') Serial.println("Nivel Calculado com Sucesso");
+  if     (resultadoGerenciamentodeBateria == '0') 
+    {
+      Serial.print("Nivel Calculado com Sucesso ");
+      Serial.println(nivelCarga);
+    }
   else if(resultadoGerenciamentodeBateria == '1') Serial.println("Erro de Leitura de Tensao");
   
-  if((myRTC.hours - dataAtual[2] == 1 || myRTC.hours - dataAtual[2] == 23) && false/*remove this after done*/){
+  if((ultimaMovimentacao - dataAtual[2] == 1 || ultimaMovimentacao - dataAtual[2] == 23) && false/*remove this after done*/){
     char result = mainmoduloProducao(); 
     if     (result == '1')Serial.println("Erro na angulacao/mecanico");
     else if(result == '2')Serial.println("Erro no GPS");
@@ -151,12 +162,61 @@ void loop() {
 //Funcoes divididas
 void modoEconomia(bool ligar){
   if(ligar){
-    Serial.println("Nivel de carga baixo, entrando em modo de economia");
+    Serial.println("Entrando em modo de economia");
     Serial.flush(); 
     esp_deep_sleep_start();
   }
 }
 
+//INICIO Comando
+
+  void setupComando(){
+      sistemaMestre.begin(9600);
+  }
+
+  void mainprocessamentodeComando(){//nivelCarga
+    
+    if (sistemaMestre.available() > 0){
+      char received = sistemaMestre.read();
+  
+      Serial.print("Comando chegou: ");
+      Serial.println(received);
+      
+      if (received == 'L'){//Retorna luminosidade
+        sistemaMestre.print(brilho);//TODO Kuminosidade
+      }
+      else if (received == 'E'){//Retorna True(1), e coloca o sistema em modo de economia
+        sistemaMestre.print(1.0);
+        modoEconomia(true);
+      }
+      else if (received == 'B'){//retone nivel da bateria
+        sistemaMestre.print(nivelCarga);
+      }
+      else{//Retorna código de erro, no nosso caso '!'
+        sistemaMestre.print(-225.0);
+      }
+    }
+  
+  }
+
+//FIM Comando
+
+
+//INICIO LDR - Sensoriamento
+
+void calcularBrilho(){
+  int somatorio = 0;
+  int valorAnalogico;
+  int brilhoAtual;
+  for(int i=0;i<1000;i++){
+      valorAnalogico = analogRead(36);
+      brilhoAtual = map(valorAnalogico, 0, 4095, 0, 100);
+      somatorio += brilhoAtual;
+  }  
+  brilho = somatorio/1000;
+}
+
+//FIM LDR - Sensoriamento
 
 //INICIO Gerenciamento de Bateria
 
@@ -171,24 +231,30 @@ void setupGerenciamentoBateria(){
 }
 
 char mainGerenciamentodeBateria(){
-  entradaAnalogicaTensao = analogRead(pinoTensao);
-  if(entradaAnalogicaTensao<0 || entradaAnalogicaTensao>4096)return '2';
-  calculaNiveldeCarga(analogRead(pinoTensao));
+  if(entradaAnalogicaTensao<0 || entradaAnalogicaTensao>4095)return '2';
+  calculaNiveldeCarga();
   if(nivelCarga<20){
     modoEconomia(true);
     return '1';
   }    
   return '0';
 }
-float calculaNiveldeCarga(int leituraAnalogica){
-  tensao = 0.000806 * (float)leituraAnalogica + 1.6;
-   
-  if(tensao<3){
-     nivelCarga = 0;
+void calculaNiveldeCarga(){
+  float somatorio = 0;
+  float nivelCargaAtual;
+  for(int i=0;i<1000;i++){
+    entradaAnalogicaTensao = analogRead(pinoTensao);
+    tensao = (3.3 * entradaAnalogicaTensao)/4095;
+    tensao = tensao * (12.7)/2.7;
+    if(tensao<3){
+       nivelCargaAtual = 0;
+    }
+    else{
+      nivelCargaAtual = 100*(tensao - 3)/12;
+    }
+    somatorio += nivelCargaAtual;
   }
-  else{
-    nivelCarga = (tensao-3.0)*83.333;
-  }
+  nivelCarga = somatorio/1000;
   
 }
 
@@ -228,7 +294,6 @@ char mainmoduloProducao(){
   }
   else{
     posicaoSolarAtual();
-    printaAngulo();
     bool error = posicionarPlaca();
     if(!error) return '4';
     return '0';
@@ -238,7 +303,6 @@ char mainmoduloProducao(){
 
 bool dataHoraAtual(){
   myRTC.updateTime();
-  if(dataAtual[2] - myRTC.hours != 1 || dataAtual[2] - myRTC.hours != 23) return true;
   dataAtual[0] = myRTC.seconds;
   dataAtual[1] = myRTC.minutes;
   dataAtual[2] = myRTC.hours;
@@ -365,8 +429,10 @@ void moverMotorElevacao(int passos){
   myStepper_vertical.step(passos);
 }
 bool posicionarPlaca(){
+  
   bool perfectPositioned = false;
   Serial.println("Posicionando a placa...");
+  
   while(!perfectPositioned){
     printaAngulo();
     bool error = obterAnguloAtual();
@@ -393,6 +459,8 @@ bool posicionarPlaca(){
     }
     delay(500);
   }
+  
+  ultimaMovimentacao = dataAtual[2];
   return true;
 }
 

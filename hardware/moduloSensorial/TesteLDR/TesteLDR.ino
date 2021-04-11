@@ -4,7 +4,6 @@
 
 void setup() {
   Serial.begin(9600);  // set baud rate to 9600
-  pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
