@@ -1,7 +1,7 @@
 #include "SoftwareSerial.h" // Inclui a biblioteca SoftwareSerial
 
 // Cria uma serial em software 
-SoftwareSerial blackBoardMaster(2,4); // (RX, TX)
+SoftwareSerial blackBoardMaster(15,4); // (RX, TX)
 
 void setup() {
 

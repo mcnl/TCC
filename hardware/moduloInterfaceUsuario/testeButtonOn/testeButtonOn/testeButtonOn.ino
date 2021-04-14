@@ -1,4 +1,4 @@
-int d=2;   // to store on or off value
+int statusBotao=2;   // to store on or off value
 void setup()
 {
   Serial.begin(9600);
@@ -6,11 +6,17 @@ void setup()
 }
 void loop()
 {
-  d=digitalRead(16);
-  if(d==0){
-    Serial.println("Não foi ligado!");
+  
+  esperaPeloOn();
+
+}
+
+void esperaPeloOn(){
+  statusBotao = digitalRead(16);
+  delay(2000);
+  Serial.println("Esperando para ser ligado!");
+  while(statusBotao==0){
+    statusBotao=digitalRead(16);
   }
-  else{
-    Serial.println("Ta ligado!");
-  }
+  Serial.println("Foi ligado!");
 }

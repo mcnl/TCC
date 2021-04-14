@@ -1,5 +1,5 @@
 
-const int pinoTensao = 27;
+const int pinoTensao = 39;
 
 int entradaAnalogicaTensao = 0;
 double tensao;
@@ -10,20 +10,21 @@ void setup() {
 }
 
 void loop() {
-  // Reading potentiometer value
-  entradaAnalogicaTensao = analogRead(pinoTensao);
-  tensao = 0.000806*potValue+1.6;
-  Serial.print(entradaAnalogicaTensao);
-  Serial.print(" = ");
-  Serial.print(tensao);
-  
-  Serial.print(" - ");
-  if(tensao<3){
-     Serial.println("0%");
+  float somatorio = 0;
+  float nivelCargaAtual;
+  int nivelCarga;
+  for(int i=0;i<1000;i++){
+    entradaAnalogicaTensao = analogRead(pinoTensao);
+    tensao = (3.3 * entradaAnalogicaTensao)/4095;
+    tensao = tensao * (12.7)/2.7;
+    if(tensao<3){
+       nivelCargaAtual = 0;
+    }
+    else{
+      nivelCargaAtual = 100*(tensao - 3)/12;
+    }
+    somatorio += nivelCargaAtual;
   }
-  else{
-    Serial.print((tensao-3.0)*83.333);
-    Serial.println("% ");
-  }
-  delay(500);
+  nivelCarga = somatorio/1000;
+  Serial.println(nivelCarga);
 }

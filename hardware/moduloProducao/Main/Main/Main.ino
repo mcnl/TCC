@@ -1,17 +1,8 @@
 //Modulo de Producao - Código Principal
 //Escrito e projetado por Matheus Casa Nova da Luz
-
-#define Nsta 3     // 3 valores de estado:
-#define Mobs 3     // Three 
-
 #define uS_TO_S_FACTOR 1000000ULL  
-#define TIME_TO_SLEEP  120   
+#define TIME_TO_SLEEP  5   
 
-#include <TinyEKF.h>
-
-#include <math.h>
-#include <stdlib.h>
-#include <time.h>
 #include <Wire.h>
 
 #include <Stepper.h> 
@@ -21,87 +12,59 @@
 
 #include <virtuabotixRTC.h> 
 
+#include <WiFi.h>
+#include <IOXhop_FirebaseESP32.h>
+
+// Set these to run example.
+#define FIREBASE_HOST "sunny-spots-757b9.firebaseio.com/"
+#define FIREBASE_AUTH "7OcygkhYndryXxWsa8i2QrGoZxqgvEPEkpzxT9Q9"
+#define WIFI_SSID "NET_2GDF6789"
+#define WIFI_PASSWORD "B3DF6789"
+
+#include <LiquidCrystal_I2C.h>
+#define lcdColumns 16
+#define lcdRows 2
+LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);  
+
 //Variaveis do Modulo de Produção
 //Sensor de Angulagem
-const int MPU_addr=0x68;
+#define MPU_addr 0x68
 int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
  
-int minVal=265;
-int maxVal=402;
+#define minVal 265
+#define maxVal 402
 
-class Fuser : public TinyEKF {
-
-    public:
-
-        Fuser()
-        {            
-            // We approximate the process noise using a small constant
-            this->setQ(0, 0, .0001);
-            this->setQ(1, 1, .0001);
-
-            // Same for measurement noise
-            this->setR(0, 0, .0001);
-            this->setR(1, 1, .0001);
-            this->setR(2, 2, .0001);
-        }
-
-    protected:
-
-        void model(double fx[Nsta], double F[Nsta][Nsta], double hx[Mobs], double H[Mobs][Nsta])
-        {
-            // Process model is f(x) = x
-            fx[0] = this->x[0];
-            fx[1] = this->x[1];
-
-            // So process model Jacobian is identity matrix
-            F[0][0] = 1;
-            F[1][1] = 1;
-
-            // Measurement function simplifies the relationship between state and sensor readings for convenience.
-            // A more realistic measurement function would distinguish between state value and measured value; e.g.:
-            //   hx[0] = pow(this->x[0], 1.03);
-            //   hx[1] = 1.005 * this->x[1];
-            //   hx[2] = .9987 * this->x[1] + .001;
-            hx[0] = this->x[0]; // Barometric pressure from previous state
-            hx[1] = this->x[1]; // Baro temperature from previous state
-            hx[2] = this->x[1]; // LM35 temperature from previous state
-
-            // Jacobian of measurement function
-            H[0][0] = 1;        // Barometric pressure from previous state
-            H[1][1] = 1 ;       // Baro temperature from previous state
-            H[2][1] = 1 ;       // LM35 temperature from previous state
-        }
-};
-
- Fuser ekf;
  
 //Motores de Passo
-const int stepsPerRevolution = 500; 
+#define stepsPerRevolution  500
 Stepper myStepper_vertical(stepsPerRevolution, 26,33,25,32); 
 Stepper myStepper_horizontal(stepsPerRevolution, 23,18,19,5);
 //GPS
-static const int RXPin = 34, TXPin = 35;
-static const uint32_t GPSBaud = 4800;
+#define RXPin 34
+#define TXPin 35
+#define GPSBaud 4800
 TinyGPSPlus gps;
 SoftwareSerial ss(RXPin, TXPin);
 //Data, GPS e Angulo
 //Segundos, Minutos, Horas, Dia, Mes, Ano
-int dataAtual[6]      = {0,0,11,19,3,2021};
-double gpsAtual[]    = {-8.15762000,-34.91477200};
-double ultimaElevacao = 90.0;
-double ultimoAzimuth  = 0.0;
+RTC_DATA_ATTR uint16_t dataAtual[6]      = {0,0,11,19,3,2021};
+RTC_DATA_ATTR float gpsAtual[]    = {-8.15762000,-34.91477200};
+float ultimaElevacao = 90.0;
+float ultimoAzimuth  = 0.0;
 float angulosPlacaSolar[3] = {0,0,0};
 float filterAngulosPlacaSolar[3] = {0,0,0};
-int ultimaMovimentacao = 10;
+RTC_DATA_ATTR int ultimaMovimentacao = 10;
+uint8_t retries = 0;
 //RTC
-virtuabotixRTC myRTC(14, 12, 13);
+RTC_DATA_ATTR virtuabotixRTC myRTC(14, 12, 13);
 //Comando
 SoftwareSerial sistemaMestre(15,4);
 //LDR
-int brilho;
+uint8_t brilho;
 //Parte do modulo de Gerenciamento de Bateria
 //Variaveis do Sleep
-RTC_DATA_ATTR int bootCount = 0;
+//Botao ON
+uint8_t statusBotao=2; 
 
 void print_wakeup_reason(){
   esp_sleep_wakeup_cause_t wakeup_reason;
@@ -110,65 +73,349 @@ void print_wakeup_reason(){
 
   switch(wakeup_reason)
   {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+    case ESP_SLEEP_WAKEUP_EXT0 : break;
+    case ESP_SLEEP_WAKEUP_EXT1 : sistemaMestre.print(1); break;
+    case ESP_SLEEP_WAKEUP_TIMER : mainGerenciamentodeBateria(); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : break;
+    case ESP_SLEEP_WAKEUP_ULP : break;
+    default : break;
   }
 }
 //Variaveis de medição da Bateria
-const int pinoTensao = 27;
-int entradaAnalogicaTensao = 0;
-double tensao;
-int nivelCarga; 
+#define pinoTensao 39
+uint16_t entradaAnalogicaTensao = 0;
+uint8_t tensao;
+uint8_t nivelCarga; 
+
+RTC_DATA_ATTR bool setupFeito = false;
 
 
 void setup() {
+  delay(10000);
   // Setup Inicial 
-  Serial.begin(9600);
+  setupLCD();
   setupGerenciamentoBateria();
   setupModuloProducao();
   setupComando();
   dataHoraAtual();
+  setupFirebase();
+  if(!setupFeito){
+    //finalSetup();  
+  }
 }
 
 void loop() {
-
+  
   mainprocessamentodeComando();
+  
   calcularBrilho();
   
+  obterAnguloAtual();
+  
+  
   char resultadoGerenciamentodeBateria = mainGerenciamentodeBateria();
-  if     (resultadoGerenciamentodeBateria == '0') 
-    {
-      Serial.print("Nivel Calculado com Sucesso ");
-      Serial.println(nivelCarga);
-    }
-  else if(resultadoGerenciamentodeBateria == '1') Serial.println("Erro de Leitura de Tensao");
+  if(resultadoGerenciamentodeBateria == '2'){
+      nivelCarga = -1;
+  }
+  enviarInformacaoFirebase(gpsAtual[0], gpsAtual[1], angulosPlacaSolar[1], angulosPlacaSolar[0], nivelCarga, brilho);
   
-  if((ultimaMovimentacao - dataAtual[2] == 1 || ultimaMovimentacao - dataAtual[2] == 23) && false/*remove this after done*/){
+  if(statusBotao != digitalRead(16)){
+    lcd.backlight();
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Carga     Brilho");
+    lcd.setCursor(0,1);
+    lcd.print(nivelCarga);
+    lcd.setCursor(13,1);
+    lcd.print(brilho);
+    delay(10000);
+    lcd.noBacklight();
+    statusBotao = digitalRead(16);
+  }
+  
+  if((abs(ultimaMovimentacao - dataAtual[2]) == 1)){
     char result = mainmoduloProducao(); 
-    if     (result == '1')Serial.println("Erro na angulacao/mecanico");
-    else if(result == '2')Serial.println("Erro no GPS");
-    else if(result == '3')Serial.println("Erro no RTC");
-    else if(result == '4')Serial.println("Erro ao posicionar placa");
-    else Serial.println("Nenhum erro, placa rotacionado com sucesso");
+    if     (result == '1')printLCD(100,3000,"Erro mecanico!");
+    else if(result == '4')printLCD(100,3000,"Não foi possivel posicionar a placa :/");
+    else printLCD(100,3000,"Placa Posicionada");
   } 
-  
-  delay(5000);
+  delay(1000);
 }
 
-//Funcoes divididas
+
+void finalSetup(){
+  printLCD(100,3000,"Ola usuario(a)! Eu me chamo Sunny Spots! :D");
+  printLCD(100,2000,"Eu sou uma estacao de producao de energia solar");
+  printLCD(100,2000,"Por favor nao conecte nada, ok?");
+  printLCD(100,2000,"E nem coloque o ligar, para ligado ;)");
+  printLCD(100,2000,"Por favor, posiciona o painel para o norte?");
+  printLCD(100,2000,"É só virar ele até o LDR estar voltado para o norte");
+  printLCD(100,2000,"Quando tiver pronto, liga e desliga o botao OFF");
+  esperaPeloOn();
+  esperaPeloOff();
+  printLCD(100,2000,"Perfeito :D");
+  printLCD(100,2000,"Me da um instante pra pegar nossa localizacao e que dia e hora eh hoje! ;)");
+  while(retries<3 && !posicaoGpsAtual()){
+    retries++;
+    printLCD(100,3000,"Tentativa " + (retries));
+    delay(1000);
+  }
+  if(retries==3){
+    printLCD(100,3000,"Meu sensor GPS não conseguiu pegar os dados necessários para seguir a execução :(");
+    printLCD(100,3000,"Mas eu posso tentar pegar as informações pelo firebase :D");
+
+    printLCD(100,3000,"Verifique as informações lá!");
+    printLCD(100,3000,"Se estiver tudo de acordo, aperte o botao ON!");
+
+    esperaPeloOn();
+    
+    dataAtual[0] = pegarDatadoFirebase("segundo");
+    dataAtual[1] = pegarDatadoFirebase("minuto");
+    dataAtual[2] = pegarDatadoFirebase("hora");
+    dataAtual[3] = pegarDatadoFirebase("dia");
+    dataAtual[4] = pegarDatadoFirebase("mes");
+    dataAtual[5] = pegarDatadoFirebase("ano");
+
+    gpsAtual[0] = pegarLocaldoFirebase("latitude");
+    gpsAtual[1] = pegarLocaldoFirebase("longitude");
+    
+    printLCD(100,3000,"Consegui o que a gente precisava no Firebase :D");
+    printLCD(100,3000,"Latitude: ");
+    printLCDDados(100,3000,gpsAtual[0]);
+    printLCD(100,3000,"Longitude: ");
+    printLCDDados(100,3000,gpsAtual[1]);
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(dataAtual[2]);
+    lcd.print(":");
+    lcd.print(dataAtual[1]);
+    lcd.setCursor(0,1);
+    lcd.print(dataAtual[3]);
+    lcd.print("/");
+    lcd.print(dataAtual[4]);
+    lcd.print("/");
+    lcd.print(dataAtual[5]);
+    setupGPSRTC();
+    
+  }
+  else{
+    printLCD(100,3000,"Consegui o que a gente precisava :D");
+    printLCD(100,3000,"Latitude: ");
+    printLCDDados(100,3000,gpsAtual[0]);
+    printLCD(100,3000,"Longitude: ");
+    printLCDDados(100,3000,gpsAtual[1]);
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(dataAtual[2]);
+    lcd.print(":");
+    lcd.print(dataAtual[1]);
+    lcd.setCursor(0,1);
+    lcd.print(dataAtual[3]);
+    lcd.print("/");
+    lcd.print(dataAtual[4]);
+    lcd.print("/");
+    lcd.print(dataAtual[5]);
+    delay(3000);
+    printLCD(100,3000,"Atualizando Firebase!");
+    
+    setarDatadoFirebase("segundo", dataAtual[0]);
+    setarDatadoFirebase("minuto",  dataAtual[1]);
+    setarDatadoFirebase("hora",    dataAtual[2]);
+    setarDatadoFirebase("dia",     dataAtual[3]);
+    setarDatadoFirebase("mes",     dataAtual[4]);
+    setarDatadoFirebase("ano",     dataAtual[5]);
+
+    setarLocaldoFirebase("latitude", gpsAtual[0]);
+    setarLocaldoFirebase("longitude", gpsAtual[1]);
+    
+    printLCD(100,3000,"Firebase Atualizado!");
+    setupGPSRTC();
+    printLCD(100,3000,"RTC Atualizado :D");
+    printLCD(100,3000,"Agora por favor, ligue o interruptor ON");
+  
+    esperaPeloOn();
+  }
+  printLCD(100,3000,"Iniciando Producao :D");
+  setupFeito = true;
+  ultimaMovimentacao = dataAtual[2] - 1;
+  delay(5000);  
+  lcd.noBacklight();
+}
+
+//Funcoes divididas____________________________________________________________________________________________________
 void modoEconomia(bool ligar){
   if(ligar){
-    Serial.println("Entrando em modo de economia");
-    Serial.flush(); 
+    printLCD(100,3000,"Entrando em Modo Economia");
     esp_deep_sleep_start();
   }
 }
 
-//INICIO Comando
+
+//INICIO WIFI - FIrebase____________________________________________________________________________________________________
+
+void setupFirebase(){
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  printLCD(100,3000,"Conectando com Wifi");
+  while (WiFi.status() != WL_CONNECTED) {
+    printLCD(50,1000,"....");
+    delay(500);
+  }
+  printLCD(100,3000,"Conexao adquirida! :D");
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(WiFi.localIP());
+
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+}
+
+bool enviarInformacaoFirebase(float lat, float lng, float horizontal, float vertical, int nivelBateria, int luminosidade){
+    bool n = 0;
+    Firebase.setFloat("/device-1/local/latitude", lat);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setFloat("/device-1/local/longitude", lng);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/leitura/carga", nivelBateria);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/leitura/luminosidade", luminosidade);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/leitura/anguloPainel/elevacao", vertical);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/leitura/anguloPainel/azimute", horizontal);
+    if (Firebase.failed()) {
+        return false;
+    }
+    String name = Firebase.pushInt("/device-1/logs/", n++);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/logs/"+name+"/carga", nivelBateria);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/logs/"+name+"/luminosidade", luminosidade);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/logs/"+name+"/anguloPainel/elevacao", vertical);
+    if (Firebase.failed()) {
+        return false;
+    }
+    Firebase.setInt("/device-1/logs/"+name+"/anguloPainel/azimute", horizontal);
+    if (Firebase.failed()) {
+        return false;
+    }
+    return true;
+}
+
+uint16_t pegarDatadoFirebase(String unidadeTempo){
+  uint16_t resposta = Firebase.getInt("/device-1/data/"+unidadeTempo);
+  if (Firebase.failed()) {
+        return -1;
+  }
+  return resposta;
+}
+float pegarLocaldoFirebase(String unidadeLocal){
+  float resposta = Firebase.getFloat("/device-1/local/"+unidadeLocal);
+  if (Firebase.failed()) {
+        return -1259;
+  }
+  return resposta;
+}
+bool setarDatadoFirebase(String unidadeTempo, int tempo){
+  Firebase.setInt("/device-1/data/"+unidadeTempo,tempo);
+  if (Firebase.failed()) {
+        return false;
+  }
+  return true;
+}
+bool setarLocaldoFirebase(String unidadeLocal, float coordenada){
+  Firebase.setFloat("/device-1/local/"+unidadeLocal,coordenada);
+  if (Firebase.failed()) {
+        return false;
+  }
+  return true;
+}
+
+
+
+
+//FIM WIFI-FIREBASE____________________________________________________________________________________________________
+
+
+
+
+//LCD INICIO____________________________________________________________________________________________________
+
+void setupLCD(){
+  lcd.init();                     
+  lcd.backlight();
+}
+
+void printLCD(uint16_t velocidadeLetras, uint16_t velocidadeApagarTela, std::string mensagem){
+  lcd.clear(); 
+  lcd.setCursor(0,0);
+  for(uint8_t i = 0; i< mensagem.size();i++){
+    if(i%32==0 && i>0){
+      delay(velocidadeApagarTela/2);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      delay(velocidadeApagarTela);
+    }
+    else if(i%16==0 && i>0){
+      lcd.setCursor(0, 1);
+    }
+    lcd.print(mensagem[i]);
+    delay(velocidadeLetras);
+  }
+  delay(velocidadeApagarTela/2);
+}
+
+void printLCDDados(uint16_t velocidadeLetras, uint16_t velocidadeApagarTela, float mensagem){ 
+  lcd.setCursor(0,1);
+  lcd.print(mensagem);
+  delay(velocidadeApagarTela/2);
+}
+
+
+//LCD FIM____________________________________________________________________________________________________
+
+//BUTTON INICIO____________________________________________________________________________________________________
+void setupButton(){
+  pinMode(16,INPUT);
+}
+
+void esperaPeloOn(){
+  statusBotao = digitalRead(16);
+  delay(2000);
+  while(statusBotao==0){
+    statusBotao=digitalRead(16);
+  }
+}
+
+void esperaPeloOff(){
+  statusBotao = digitalRead(16);
+  delay(2000);
+  while(statusBotao==1){
+    statusBotao=digitalRead(16);
+  }
+}
+
+
+//BUTTON FIM____________________________________________________________________________________________________
+
+
+
+//INICIO Comando____________________________________________________________________________________________________
 
   void setupComando(){
       sistemaMestre.begin(9600);
@@ -179,8 +426,7 @@ void modoEconomia(bool ligar){
     if (sistemaMestre.available() > 0){
       char received = sistemaMestre.read();
   
-      Serial.print("Comando chegou: ");
-      Serial.println(received);
+       printLCD(100,3000,"Comando recebido do Mestre!:D");
       
       if (received == 'L'){//Retorna luminosidade
         sistemaMestre.print(brilho);//TODO Kuminosidade
@@ -199,16 +445,16 @@ void modoEconomia(bool ligar){
   
   }
 
-//FIM Comando
+//FIM Comando____________________________________________________________________________________________________
 
 
-//INICIO LDR - Sensoriamento
+//INICIO LDR - Sensoriamento____________________________________________________________________________________________________
 
 void calcularBrilho(){
-  int somatorio = 0;
-  int valorAnalogico;
-  int brilhoAtual;
-  for(int i=0;i<1000;i++){
+  uint16_t somatorio = 0;
+  uint16_t valorAnalogico;
+  uint8_t brilhoAtual;
+  for(uint16_t i=0;i<1000;i++){
       valorAnalogico = analogRead(36);
       brilhoAtual = map(valorAnalogico, 0, 4095, 0, 100);
       somatorio += brilhoAtual;
@@ -216,17 +462,13 @@ void calcularBrilho(){
   brilho = somatorio/1000;
 }
 
-//FIM LDR - Sensoriamento
+//FIM LDR - Sensoriamento____________________________________________________________________________________________________
 
-//INICIO Gerenciamento de Bateria
+//INICIO Gerenciamento de Bateria____________________________________________________________________________________________________
 
 void setupGerenciamentoBateria(){
-  ++bootCount;
-  Serial.println("Boot number: " + String(bootCount));
   print_wakeup_reason();
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
-  " Seconds");
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_2,1); 
 }
 
@@ -240,8 +482,8 @@ char mainGerenciamentodeBateria(){
   return '0';
 }
 void calculaNiveldeCarga(){
-  float somatorio = 0;
-  float nivelCargaAtual;
+  uint16_t somatorio = 0;
+  uint8_t nivelCargaAtual;
   for(int i=0;i<1000;i++){
     entradaAnalogicaTensao = analogRead(pinoTensao);
     tensao = (3.3 * entradaAnalogicaTensao)/4095;
@@ -258,10 +500,14 @@ void calculaNiveldeCarga(){
   
 }
 
-//FIM Gerenciamento de Bateria
+//FIM Gerenciamento de Bateria____________________________________________________________________________________________________
 
 
-// Inicio MODULO DE PRODUCAO
+// Inicio MODULO DE PRODUCAO____________________________________________________________________________________________________
+void setupGPSRTC(){
+  myRTC.setDS1302Time(dataAtual[0], dataAtual[1], dataAtual[2], 2,dataAtual[3], dataAtual[4], dataAtual[5]);
+}
+
 
 void setupModuloProducao(){
   
@@ -276,21 +522,11 @@ void setupModuloProducao(){
   myStepper_horizontal.setSpeed(1);
   //GPS
   ss.begin(GPSBaud);
-  //RTC (segundos, minutos, hora, dia da semana, dia do mes, mes, ano)
-  myRTC.setDS1302Time(dataAtual[0], dataAtual[1], dataAtual[2], 2,dataAtual[3], dataAtual[4], dataAtual[5]);
 }
 
 char mainmoduloProducao(){
   if(!obterAnguloAtual()){
     return '1';
-  }
-  else if(!posicaoGpsAtual()){
-    posicionarPlaca();
-    return '2';
-  }
-  else if(!dataHoraAtual()){
-    posicionarPlaca();
-    return '3';
   }
   else{
     posicaoSolarAtual();
@@ -314,42 +550,10 @@ bool dataHoraAtual(){
   
   return true;
 }
-void printaTempo(){
-  Serial.println("Pegando Data");
-  Serial.print("Data : ");
-  Serial.print(", ");
-  Serial.print(myRTC.dayofmonth);
-  Serial.print("/");
-  Serial.print(myRTC.month);
-  Serial.print("/");
-  Serial.print(myRTC.year);
-  Serial.print("  ");
-  Serial.print("Hora : ");
-  
-  if (myRTC.hours < 10)
-  {
-    Serial.print("0");
-  }
 
-  Serial.print(myRTC.hours);
-  Serial.print(":");
-  if (myRTC.minutes < 10)
-  {
-    Serial.print("0");
-  }
-
-  Serial.print(myRTC.minutes);
-  Serial.print(":");
-  if (myRTC.seconds < 10)
-  {
-    Serial.print("0");
-  }
-
-  Serial.println(myRTC.seconds);
-
-}
 bool obterAnguloAtual(){
-  for(int i = 0; i<1000 ; i++){
+  
+  for(uint16_t i = 0; i<1000 ; i++){
     Wire.beginTransmission(MPU_addr);
     Wire.write(0x3B);
     Wire.endTransmission(false);
@@ -359,12 +563,11 @@ bool obterAnguloAtual(){
     AcY=Wire.read()<<8|Wire.read();
     AcZ=Wire.read()<<8|Wire.read();
   
-    double out[3] = {AcX, AcY, AcZ};
-    ekf.step(out);
+    float out[3] = {AcX, AcY, AcZ};
       
-    int xAng = map(out[0],minVal,maxVal,0,360);
-    int yAng = map(out[1],minVal,maxVal,0,360);
-    int zAng = map(out[2],minVal,maxVal,0,360);
+    uint16_t xAng = map(out[0],minVal,maxVal,0,360);
+    uint16_t yAng = map(out[1],minVal,maxVal,0,360);
+    uint16_t zAng = map(out[2],minVal,maxVal,0,360);
     
     angulosPlacaSolar[0] = RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
     angulosPlacaSolar[1] = RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
@@ -390,25 +593,34 @@ bool obterAnguloAtual(){
   if(angulosPlacaSolar[2]==225) return false;
   return true;
 }
-void printaAngulo(){
-  Serial.println("Pegando Angulo Atual");
-  Serial.print("Angulo Eixo X: ");
-  Serial.print(angulosPlacaSolar[0]);
-  Serial.print(" Angulo Eixo de Rotação Horizontal: ");
-  Serial.println(angulosPlacaSolar[1]);
-  Serial.print("Elevacao alvo: ");
-  Serial.print(ultimaElevacao);
-  Serial.print(" Azimute: ");
-  Serial.println(ultimoAzimuth);
-}
+
 bool posicaoGpsAtual(){
-  return true;//just for DEBUG - Delete this line after
   while (ss.available() > 0){
     if (gps.encode(ss.read())){
       if (gps.location.isValid())
       {
         gpsAtual[0] = gps.location.lat();
         gpsAtual[1] = gps.location.lng();
+      }
+      else
+      {
+        return false;
+      }
+      if (gps.date.isValid())
+      {
+        dataAtual[3] = gps.date.month();
+        dataAtual[4] = gps.date.day();
+        dataAtual[5] = gps.date.year();
+      }
+      else
+      {
+        return false;
+      }
+      if (gps.time.isValid())
+      {
+        dataAtual[2] = gps.time.hour();
+        dataAtual[1] = gps.time.minute();
+        dataAtual[0] = gps.time.second();
         return true;
       }
       else
@@ -422,25 +634,24 @@ bool posicaoGpsAtual(){
     return false;
   }
 }
-void moverMotorAzimuth(int passos){
+void moverMotorAzimuth(unsigned short passos){
   myStepper_horizontal.step(passos);
 }
-void moverMotorElevacao(int passos){
+void moverMotorElevacao(unsigned short passos){
   myStepper_vertical.step(passos);
 }
 bool posicionarPlaca(){
   
   bool perfectPositioned = false;
-  Serial.println("Posicionando a placa...");
+  printLCD(100,3000,"Posicionando Placa");
   
   while(!perfectPositioned){
-    printaAngulo();
     bool error = obterAnguloAtual();
     
     if(!error) return false;
     
-    double diferencaElevacao = angulosPlacaSolar[0] - ultimaElevacao;
-    double diferencaAzimute  = angulosPlacaSolar[1] - ultimoAzimuth;
+    float diferencaElevacao = angulosPlacaSolar[0] - ultimaElevacao;
+    float diferencaAzimute  = angulosPlacaSolar[1] - ultimoAzimuth;
     
     if(diferencaElevacao > 5){
       moverMotorElevacao(-3000);
@@ -465,10 +676,10 @@ bool posicionarPlaca(){
 }
 
 //posicaoSolarAtual ----------------------------
-const double rad =  PI / 180.0;
-const double e   =  rad * 23.4397;
+#define rad   PI / 180.0
+#define e    rad * 23.4397
 
-double roundRadians(double beta){
+float roundRadians(double beta){
 	double trash;
 	if(beta>2*PI){
 		beta = beta/2*PI;
@@ -476,7 +687,7 @@ double roundRadians(double beta){
 	}
 	return beta;
 }
-double dateToMiliseconds(int sec,int minute,int hour,int day, int month, int year){
+float dateToMiliseconds(int sec,int minute,int hour,int day, int month, int year){
 	struct tm date = {
 		.tm_sec=sec,
 		.tm_min=minute,
@@ -485,76 +696,66 @@ double dateToMiliseconds(int sec,int minute,int hour,int day, int month, int yea
 		.tm_mon=month,
 		.tm_year=year - 1900
 	};
-	return ((double)mktime(&date))*1000.0;
+	return ((float)mktime(&date))*1000.0;
 }
-double ToJulian(double date){
+float ToJulian(float date){
 	return (date - dateToMiliseconds(1,0,0,1,1,1970)) / (1000.0 * 60.0 * 60.0 * 24.0) - 0.5 + 2440588.0;
 }
-double ToDays(double date){
+float ToDays(float date){
 	return ToJulian(date) - 2451545.0;
 }
-double rightAscencion(double d){
-	double m = rad * (357.5291 + 0.98560028 * d);
-	double c = rad * (1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m));
-	double p = rad * 102.9372; 
-	double l = m + c + p + PI;
-	double ra = atan2((sin(l) * cos(e) - tan(0) * sin(e)),cos(l));
+float rightAscencion(float d){
+	float m = rad * (357.5291 + 0.98560028 * d);
+	float c = rad * (1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m));
+	float p = rad * 102.9372; 
+	float l = m + c + p + PI;
+	float ra = atan2((sin(l) * cos(e) - tan(0) * sin(e)),cos(l));
 	
 	return ra;
 }
-double declination(double d){
-	double m = rad * (357.5291 + 0.98560028 * d);
-	double c = rad * (1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m));
-	double p = rad * 102.9372; 
-	double l = m + c + p + PI;
-	double dec = asin(sin(0) * cos(e) + cos(0) * sin(e) * sin(l));
+float declination(float d){
+	float m = rad * (357.5291 + 0.98560028 * d);
+	float c = rad * (1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m));
+	float p = rad * 102.9372; 
+	float l = m + c + p + PI;
+	float dec = asin(sin(0) * cos(e) + cos(0) * sin(e) * sin(l));
 	return dec;
 }
-double sideralTime(double d, double lw){
+float sideralTime(float d, float lw){
 	return rad * (280.16 + 360.9856235 * d) - lw;
 }
-double azimuth(double H, double phi, double dec){
+float azimuth(float H, float phi, float dec){
 	return PI + atan2(sin(H), (cos(H) * sin(phi) - tan(dec) * cos(phi)));
 }
-double altitude(double H, double phi, double dec){
+float altitude(float H, float phi, float dec){
 	return PI + asin(roundRadians(sin(phi) * sin(dec) + cos(phi) * cos(dec) * cos(H)));
 }
-double* getposition(double date, double lat, double lng){
-	double lw = rad * (-lng);
-	double phi = rad * lat;
-	double d = ToDays(date);
-	double RA = rightAscencion(d);
-	double dec = declination(d);
-	double H = sideralTime(d,lw) - RA;
+float* getposition(float date, float lat, float lng){
+	float lw = rad * (-lng);
+	float phi = rad * lat;
+	float d = ToDays(date);
+	float RA = rightAscencion(d);
+	float dec = declination(d);
+	float H = sideralTime(d,lw) - RA;
 
-	double az = azimuth(H,phi,dec);
-	double alt = altitude(H,phi,dec);
+	float az = azimuth(H,phi,dec);
+	float alt = altitude(H,phi,dec);
 
-	static double result[2];
+	static float result[2];
 	result[0] = 360 - (az)*180.0/PI;
 	result[1] = (alt)*180.0/PI - 180;
 	return result;
 } 
 void posicaoSolarAtual(){
-  double *ret;
-	double now;
+  float *ret;
+	float now;
 	
-  now = (double)dateToMiliseconds(dataAtual[0],dataAtual[1],(24 - dataAtual[2])+3,dataAtual[3],dataAtual[4],dataAtual[5]); 
+  now = (float)dateToMiliseconds(dataAtual[0],dataAtual[1],(24 - dataAtual[2])+3,dataAtual[3],dataAtual[4],dataAtual[5]); 
 	ret = getposition(now,gpsAtual[0],gpsAtual[1]);
 
   ultimaElevacao = *(ret + 1);
   ultimoAzimuth  = *(ret + 0);
-  printaposicaoSolarAtual();//DEBUG REMOVE AFTER
-}
-void printaposicaoSolarAtual(){
-  Serial.println("==========================");
-  Serial.println("Pegando posição do sol: ");
-  Serial.print("Elevacao: ");
-  Serial.print(ultimaElevacao);
-  Serial.print(" Azimute: ");
-  Serial.println(ultimoAzimuth);
-  Serial.println("==========================");
 }
 //posicaoSolarAtualFim -------------------------
 
-//FIM MODULO DE PRODUCAO
+//FIM MODULO DE PRODUCAO____________________________________________________________________________________________________
